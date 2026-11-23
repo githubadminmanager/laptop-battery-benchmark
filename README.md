@@ -61,3 +61,7 @@ These thresholds are a judgement call, not an industry standard.
 
 Syntax-checked and tested piece by piece (workload, report, CSV replay). A full run to an
 empty battery has not been validated end to end.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
