@@ -67,7 +67,7 @@ param(
     )
 )
 
-$ScriptVersion = "1.6.0"
+$ScriptVersion = "1.7.0"
 $cmdLineParams = @($PSBoundParameters.Keys)     # which options were typed on the command line
 $replay = $false     # becomes $true when the report is rebuilt from a CSV (-ReportFrom)
 
@@ -710,10 +710,12 @@ function Show-Report {
 
     # ---- pick the best estimate and decide if there is enough data to rate
     $valid = $false
-    if ($null -ne $pwrFullH -and $durMin -ge 10) {
-        $benchH = $pwrFullH; $leftH = $pwrLeftH; $src = "real power draw"; $valid = $true
-    } elseif ($null -ne $pctFullH -and $durMin -ge 15 -and $used -ge 3) {
-        $benchH = $pctFullH; $leftH = $pctLeftH; $src = "battery % pace (less precise)"; $valid = $true
+    # Main method: how long each 1% takes. If 1% takes 1 min, a full battery is 100 min (3 min per 1% = 5 h).
+    # Power draw is only the fallback (when there are too few 1% steps) and a cross-check in the report.
+    if ($null -ne $pctFullH -and $durMin -ge 15 -and $used -ge 3) {
+        $benchH = $pctFullH; $leftH = $pctLeftH; $src = "battery % pace (time per 1% x 100)"; $valid = $true
+    } elseif ($null -ne $pwrFullH -and $durMin -ge 10) {
+        $benchH = $pwrFullH; $leftH = $pwrLeftH; $src = "real power draw (too few 1% steps yet)"; $valid = $true
     } else {
         $benchH = $null; $leftH = $null; $src = "not enough data"
     }
@@ -798,7 +800,7 @@ function Show-Report {
         "Battery health      : $healthLine",
         "Energy left / full  : $remText / $fullText",
         "Estimate based on   : $src",
-        "(% method alone     : left $(Format-Hours $pctLeftH), full $(Format-Hours $pctFullH))"
+        "(cross-check, power : left $(Format-Hours $pwrLeftH), full $(Format-Hours $pwrFullH))"
     )
     if ($recLine) { $lines += $recLine }
     if ($replay) { $lines += "Note: rebuilt from 1-minute CSV readings, so the pace figures are approximate (about 1 minute either way per step)." }

@@ -65,8 +65,8 @@ powershell -ExecutionPolicy Bypass -File .\battery_test.ps1 -ReportFrom "$env:US
 
 ## How the rating works
 
-Full-charge life is estimated from real power draw (when the laptop reports it) or from the
-battery-percentage pace. The scale is a rough rule of thumb for a new laptop:
+Full-charge life is worked out from how long each 1% takes (1 min per 1% = 100 min; 3 min per 1% = 5 h),
+with real power draw (when the laptop reports it) shown as a cross-check. The scale is a rough rule of thumb for a new laptop:
 10h+ Excellent, 7-10h Good, 5-7h Average, 3-5h Poor, under 3h Bad.
 For older PCs the scale shrinks: 100% up to 2 years old, then 6.25 points per year
 (50% at 10 years, never below 40%). The report shows both the age-adjusted and the new-laptop rating.
