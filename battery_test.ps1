@@ -24,7 +24,23 @@
 .PARAMETER KeepApps
     Do not close your open apps before the test. (The result is then less comparable.)
 .PARAMETER Sites
-    Websites opened as browser tabs, one tab each. Default: 5 ordinary news / reference sites.
+    Websites to open as browser tabs. Default: 5 ordinary news / reference sites.
+.PARAMETER Tabs
+    How many browser tabs to open (1-30). 0 (default) = one tab per website in -Sites.
+    Asking for more tabs than websites adds extra ordinary websites automatically.
+.PARAMETER Browser
+    Auto (default: Chrome, else Edge), Chrome, Edge, or None (no browser at all).
+.PARAMETER NoNotepad
+    Don't open or use Notepad.
+.PARAMETER NoCalculator
+    Don't open or use Calculator.
+.PARAMETER MouseActivity
+    How often the mouse wanders: Low (about every 8 s), Normal (about every 3 s, default), High (every 1-2 s).
+.PARAMETER TabSwitchEvery
+    Switch browser tab every N page visits (each visit is about a minute apart). 0 = never. Default 3.
+.PARAMETER Customize
+    Open the settings menu. It also opens by itself when you start the script with no options.
+    In the menu you can change everything and save it as your default (stored in %APPDATA%).
 #>
 param(
     [int]$Brightness = 65,
@@ -35,6 +51,13 @@ param(
     [string]$ReportFrom = "",
     [switch]$KeepApps,
     [double]$PcAgeYears = -1,
+    [switch]$NoNotepad,
+    [switch]$NoCalculator,
+    [ValidateSet('Auto', 'Chrome', 'Edge', 'None')][string]$Browser = 'Auto',
+    [ValidateRange(0, 30)][int]$Tabs = 0,
+    [ValidateSet('Low', 'Normal', 'High')][string]$MouseActivity = 'Normal',
+    [ValidateRange(0, 20)][int]$TabSwitchEvery = 3,
+    [switch]$Customize,
     [string[]]$Sites = @(
         "https://en.wikipedia.org/wiki/Laptop",
         "https://news.ycombinator.com/",
@@ -44,7 +67,8 @@ param(
     )
 )
 
-$ScriptVersion = "1.5.0"
+$ScriptVersion = "1.6.0"
+$cmdLineParams = @($PSBoundParameters.Keys)     # which options were typed on the command line
 $replay = $false     # becomes $true when the report is rebuilt from a CSV (-ReportFrom)
 
 if (-not $OutputPath) { $OutputPath = $env:USERPROFILE }
@@ -179,7 +203,7 @@ function Get-HealthRating($pct) {
 # ---------------------------------------------------------------- simulated user
 $wsh          = New-Object -ComObject WScript.Shell
 $browserDir   = Join-Path $env:TEMP "battery_test_browser"     # own throw-away browser profile
-$browser      = $null                                          # set by Start-Workload (Chrome, or Edge if no Chrome)
+$browserInfo  = $null                                          # set by Start-Workload (Chrome, or Edge if no Chrome)
 $startedNames = @()
 $useNotepad = $false; $useCalc = $false; $useBrowser = $false
 $scrolls = 0
@@ -211,7 +235,7 @@ function Get-AppHandle($app) {
                 $procs = @(Get-Process -Name ApplicationFrameHost -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like 'Calculator*' })
             }
         } elseif ($app -eq "browser" -and $script:useBrowser) {
-            $ids = @(Get-CimInstance Win32_Process -Filter "Name='$($script:browser.Exe)'" -ErrorAction SilentlyContinue |
+            $ids = @(Get-CimInstance Win32_Process -Filter "Name='$($script:browserInfo.Exe)'" -ErrorAction SilentlyContinue |
                      Where-Object { $_.CommandLine -like "*battery_test_browser*" } | ForEach-Object { $_.ProcessId })
             $procs = @($ids | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
         }
@@ -293,18 +317,202 @@ function Get-ConsoleWindowPid {
     return $null
 }
 
-# Pick the browser for the workload: Chrome if it is installed, otherwise Edge
-function Find-Browser {
-    $chrome = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-                "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
-                "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")
-    foreach ($p in $chrome) { if ($p -and (Test-Path -LiteralPath $p)) { return [pscustomobject]@{ Label = 'Chrome'; Exe = 'chrome.exe'; Path = $p } } }
-    $edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
-              "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe")
-    foreach ($p in $edge) { if ($p -and (Test-Path -LiteralPath $p)) { return [pscustomobject]@{ Label = 'Edge'; Exe = 'msedge.exe'; Path = $p } } }
-    return $null
+# ---------------------------------------------------------------- settings (tabs, browser, mouse ...) and the menu
+$settingsFile = Join-Path $env:APPDATA 'battery_benchmark_settings.json'
+$settingNames = @('Tabs', 'Browser', 'Sites', 'NoNotepad', 'NoCalculator', 'MouseActivity', 'TabSwitchEvery', 'Brightness', 'StopAt', 'Minutes', 'KeepApps', 'PcAgeYears')
+$defaultSites = @('https://en.wikipedia.org/wiki/Laptop', 'https://news.ycombinator.com/', 'https://www.bbc.com/news',
+                  'https://en.wikipedia.org/wiki/Lithium-ion_battery', 'https://www.nasa.gov/')
+$settingDefaults = @{ Tabs = 0; Browser = 'Auto'; Sites = $defaultSites; NoNotepad = $false; NoCalculator = $false; MouseActivity = 'Normal'
+                      TabSwitchEvery = 3; Brightness = 65; StopAt = 10; Minutes = 0; KeepApps = $false; PcAgeYears = -1 }
+# Extra ordinary websites, used when you ask for more tabs than websites
+$extraSites = @('https://www.reuters.com/', 'https://www.npr.org/', 'https://arstechnica.com/', 'https://en.wikipedia.org/wiki/Computer',
+                'https://www.nationalgeographic.com/', 'https://www.weather.gov/', 'https://www.theguardian.com/international',
+                'https://en.wikipedia.org/wiki/Solar_System', 'https://www.sciencedaily.com/', 'https://en.wikipedia.org/wiki/Internet',
+                'https://www.britannica.com/', 'https://www.smithsonianmag.com/', 'https://en.wikipedia.org/wiki/Moon', 'https://www.cnet.com/',
+                'https://en.wikipedia.org/wiki/Bicycle', 'https://www.gutenberg.org/', 'https://en.wikipedia.org/wiki/Tokyo', 'https://www.loc.gov/',
+                'https://en.wikipedia.org/wiki/Jazz', 'https://en.wikipedia.org/wiki/Ocean', 'https://en.wikipedia.org/wiki/Coffee',
+                'https://en.wikipedia.org/wiki/Mount_Everest', 'https://en.wikipedia.org/wiki/Chess', 'https://en.wikipedia.org/wiki/Railway',
+                'https://www.nasa.gov/missions/')
+
+# The websites that will really be opened, one per tab
+function Get-TabUrls {
+    $urls = @($Sites | Where-Object { $_ })
+    if ($urls.Count -eq 0) { $urls = @($defaultSites) }
+    $n = if ($Tabs -gt 0) { $Tabs } else { $urls.Count }
+    foreach ($e in $extraSites) {
+        if ($urls.Count -ge $n) { break }
+        if ($urls -notcontains $e) { $urls += $e }
+    }
+    $i = 0
+    while ($urls.Count -lt $n) { $urls += $urls[$i]; $i++ }
+    return @($urls | Select-Object -First $n)
 }
 
+# Seconds to wait before the next small mouse wander
+function Get-WanderDelay {
+    switch ($MouseActivity) {
+        'Low'   { return $script:rng.Next(6, 11) }
+        'High'  { return $script:rng.Next(1, 3) }
+        default { return $script:rng.Next(2, 5) }
+    }
+}
+
+# One-line description of what the simulated user will open
+function Get-WorkloadSummary {
+    $a = @()
+    if (-not $NoNotepad)    { $a += 'Notepad' }
+    if (-not $NoCalculator) { $a += 'Calculator' }
+    if ($Browser -ne 'None') {
+        $bn = switch ($Browser) { 'Chrome' { 'Chrome' } 'Edge' { 'Edge' } default { 'a browser (Chrome, else Edge)' } }
+        $a += "$bn with $(@(Get-TabUrls).Count) tabs"
+    }
+    if ($a.Count -eq 0) { return 'nothing (only the mouse moves)' }
+    return ($a -join ', ')
+}
+
+function Export-SavedSettings {
+    $o = [ordered]@{}
+    foreach ($n in $settingNames) {
+        $v = Get-Variable -Name $n -Scope Script -ValueOnly
+        if ($v -is [System.Management.Automation.SwitchParameter]) { $v = [bool]$v }
+        if ($n -eq 'Sites') { $v = @($v | ForEach-Object { "$_" }) }     # plain strings, or ConvertTo-Json adds extra fields
+        $o[$n] = $v
+    }
+    $o | ConvertTo-Json | Set-Content -LiteralPath $settingsFile -Encoding UTF8
+}
+
+# Apply saved settings, except for options typed on the command line
+function Import-SavedSettings {
+    if (-not (Test-Path -LiteralPath $settingsFile)) { return $false }
+    try { $s = Get-Content -LiteralPath $settingsFile -Raw | ConvertFrom-Json } catch { return $false }
+    foreach ($n in $settingNames) {
+        if ($script:cmdLineParams -contains $n) { continue }
+        if ($null -eq $s.$n) { continue }
+        try {
+            if ($n -eq 'Sites') { Set-Variable -Name $n -Value ([string[]]@($s.$n)) -Scope Script }
+            else                { Set-Variable -Name $n -Value $s.$n -Scope Script }
+        } catch { }
+    }
+    return $true
+}
+
+function Read-IntSetting($label, $min, $max, $current) {
+    $a = (Read-Host "$label ($min-$max, Enter keeps $current)").Trim()
+    if ($a -eq '') { return $current }
+    $v = 0
+    if ([int]::TryParse($a, [ref]$v) -and $v -ge $min -and $v -le $max) { return $v }
+    Write-Host "  Not a number from $min to $max - keeping $current."
+    return $current
+}
+
+function Read-ChoiceSetting($label, $options, $current) {
+    for ($i = 0; $i -lt $options.Count; $i++) { Write-Host ("      {0}) {1}" -f ($i + 1), $options[$i]) }
+    $a = (Read-Host "$label (Enter keeps $current)").Trim()
+    if ($a -eq '') { return $current }
+    $idx = 0
+    if ([int]::TryParse($a, [ref]$idx) -and $idx -ge 1 -and $idx -le $options.Count) { return $options[$idx - 1] }
+    $hit = @($options | Where-Object { $_ -ieq $a })
+    if ($hit.Count) { return $hit[0] }
+    Write-Host "  Not one of the choices - keeping $current."
+    return $current
+}
+
+function Show-SettingsMenu {
+    $urls  = @(Get-TabUrls)
+    $hosts = ($urls | ForEach-Object { try { ([uri]$_).Host -replace '^www\.', '' } catch { $_ } }) -join ', '
+    if ($hosts.Length -gt 58) { $hosts = $hosts.Substring(0, 55) + '...' }
+    $yn    = { param($b) if ($b) { 'yes' } else { 'no' } }
+    $mouse = switch ($MouseActivity) { 'Low' { 'Low (about every 8 s)' } 'High' { 'High (every 1-2 s)' } default { 'Normal (about every 3 s)' } }
+    $rows = @(
+        @(' 1', 'Browser tabs',            "$($urls.Count)$(if ($Tabs -eq 0) { ' (one per website)' })"),
+        @(' 2', 'Browser',                 $(if ($Browser -eq 'Auto') { 'Auto (Chrome, else Edge)' } else { $Browser })),
+        @(' 3', 'Websites',                $hosts),
+        @(' 4', 'Use Notepad',             (& $yn (-not $NoNotepad))),
+        @(' 5', 'Use Calculator',          (& $yn (-not $NoCalculator))),
+        @(' 6', 'Mouse activity',          $mouse),
+        @(' 7', 'Switch tab every',        $(if ($TabSwitchEvery -gt 0) { "$TabSwitchEvery page visits" } else { 'never' })),
+        @(' 8', 'Screen brightness',       $(if ($Brightness -gt 0) { "$Brightness%" } else { 'left alone' })),
+        @(' 9', 'Stop at battery',         $(if ($StopAt -gt 0) { "$StopAt%" } else { 'runs until empty' })),
+        @('10', 'Time limit',              $(if ($Minutes -gt 0) { "$Minutes min" } else { 'none' })),
+        @('11', 'Close open apps first',   (& $yn (-not $KeepApps))),
+        @('12', 'PC age (for the rating)', $(if ($PcAgeYears -ge 0) { "$PcAgeYears years" } else { 'automatic (from BIOS date)' }))
+    )
+    Write-Host ""
+    Write-Host "------------------------- SETTINGS -------------------------"
+    foreach ($r in $rows) { Write-Host ("  {0}) {1,-24} {2}" -f $r[0], $r[1], $r[2]) }
+    Write-Host "-------------------------------------------------------------"
+}
+
+# Load saved settings, then (if wanted) let the user change them. Starts the test when they press Enter.
+function Invoke-SettingsStep {
+    $loaded = Import-SavedSettings
+    $menu   = $Customize -or ($script:cmdLineParams.Count -eq 0)
+    if (-not $menu) { return }
+    if ($loaded) { Write-Host "Loaded your saved settings (R in the menu resets them)." }
+    while ($true) {
+        Show-SettingsMenu
+        $c = (Read-Host "Type a number to change it, S = save these as my default, R = reset, Enter = START").Trim().ToUpper()
+        if ($c -eq '') { break }
+        switch ($c) {
+            '1'  { $script:Tabs = Read-IntSetting 'How many browser tabs' 1 30 @(Get-TabUrls).Count }
+            '2'  { $script:Browser = Read-ChoiceSetting 'Browser' @('Auto', 'Chrome', 'Edge', 'None') $Browser }
+            '3'  {
+                $a = (Read-Host "Website addresses separated by spaces (D = default list, Enter keeps)").Trim()
+                if ($a -eq '') { }
+                elseif ($a -ieq 'D') { $script:Sites = $defaultSites }
+                else {
+                    $new = @()
+                    foreach ($w in @($a -split '[\s,;]+' | Where-Object { $_ })) {
+                        if ($w -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') { $w = "https://$w" }
+                        if ($w -match '^https?://[^\s/]+') { $new += $w } else { Write-Host "  Skipped (needs to be a normal web address): $w" }
+                    }
+                    if ($new.Count) { $script:Sites = $new; $script:Tabs = 0; Write-Host "  Using your $($new.Count) website(s). Use option 1 for more tabs." }
+                }
+            }
+            '4'  { $script:NoNotepad    = -not [bool]$script:NoNotepad }
+            '5'  { $script:NoCalculator = -not [bool]$script:NoCalculator }
+            '6'  { $script:MouseActivity = Read-ChoiceSetting 'Mouse activity' @('Low', 'Normal', 'High') $MouseActivity }
+            '7'  { $script:TabSwitchEvery = Read-IntSetting 'Switch tab every N page visits (0 = never)' 0 20 $TabSwitchEvery }
+            '8'  { $script:Brightness = Read-IntSetting 'Screen brightness % (0 = leave alone)' 0 100 $Brightness }
+            '9'  { $script:StopAt = Read-IntSetting 'Stop at battery % (0 = run until empty)' 0 95 $StopAt }
+            '10' { $script:Minutes = Read-IntSetting 'Time limit in minutes (0 = none)' 0 10000 $Minutes }
+            '11' { $script:KeepApps = -not [bool]$script:KeepApps }
+            '12' {
+                $a = (Read-Host "PC age in years, or A for automatic (Enter keeps)").Trim()
+                if ($a -ieq 'A') { $script:PcAgeYears = -1 }
+                elseif ($a -ne '') {
+                    $d = 0.0
+                    if ([double]::TryParse($a, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$d) -and $d -ge 0 -and $d -le 40) { $script:PcAgeYears = $d }
+                    else { Write-Host "  Not a valid age - keeping it." }
+                }
+            }
+            'S'  { try { Export-SavedSettings; Write-Host "  Saved. These will be your defaults next time ($settingsFile)." } catch { Write-Host "  Could not save: $($_.Exception.Message)" } }
+            'R'  {
+                foreach ($n in $settingNames) { Set-Variable -Name $n -Value $settingDefaults[$n] -Scope Script }
+                Remove-Item -LiteralPath $settingsFile -Force -ErrorAction SilentlyContinue
+                Write-Host "  Back to the built-in defaults (saved settings deleted)."
+            }
+            default { Write-Host "  Not a choice. Type a number from 1 to 12, S, R, or just press Enter." }
+        }
+    }
+}
+
+# Pick the browser for the workload (Auto = Chrome if installed, otherwise Edge)
+function Find-Browser {
+    if ($Browser -eq 'None') { return $null }
+    if ($Browser -in 'Auto', 'Chrome') {
+        $chrome = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+                    "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+                    "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")
+        foreach ($p in $chrome) { if ($p -and (Test-Path -LiteralPath $p)) { return [pscustomobject]@{ Label = 'Chrome'; Exe = 'chrome.exe'; Path = $p } } }
+    }
+    if ($Browser -in 'Auto', 'Edge') {
+        $edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+                  "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe")
+        foreach ($p in $edge) { if ($p -and (Test-Path -LiteralPath $p)) { return [pscustomobject]@{ Label = 'Edge'; Exe = 'msedge.exe'; Path = $p } } }
+    }
+    return $null
+}
 # Apps that have an open window and would be closed (never includes this console or Windows' own shell)
 function Get-CloseCandidates {
     $protect = @('explorer', 'dwm', 'winlogon', 'csrss', 'ApplicationFrameHost', 'ShellExperienceHost', 'StartMenuExperienceHost',
@@ -348,22 +556,22 @@ function Close-OtherApps {
 function Start-Workload {
     $running = @(Get-Process | Select-Object -ExpandProperty ProcessName)
 
-    if ($running -notcontains 'notepad') {
+    if (-not $NoNotepad -and $running -notcontains 'notepad') {
         try { Start-Process notepad; $script:startedNames += 'notepad'; $script:useNotepad = $true } catch { }
     }
-    if (($running -notcontains 'CalculatorApp') -and ($running -notcontains 'Calculator')) {
+    if (-not $NoCalculator -and ($running -notcontains 'CalculatorApp') -and ($running -notcontains 'Calculator')) {
         try { Start-Process calc; $script:startedNames += 'CalculatorApp'; $script:startedNames += 'Calculator'; $script:useCalc = $true } catch { }
     }
-    $script:browser = Find-Browser
-    if ($script:browser) {
+    $script:browserInfo = Find-Browser
+    if ($script:browserInfo) {
         try {
             # Own temporary profile, so we never touch your real browser windows or logins
-            $bArgs = @("--user-data-dir=`"$browserDir`"", "--new-window", "--no-first-run", "--no-default-browser-check") + @($Sites)
-            Start-Process -FilePath $script:browser.Path -ArgumentList $bArgs
+            $bArgs = @("--user-data-dir=`"$browserDir`"", "--new-window", "--no-first-run", "--no-default-browser-check") + @(Get-TabUrls)
+            Start-Process -FilePath $script:browserInfo.Path -ArgumentList $bArgs
             $script:useBrowser = $true
         } catch { }
     } else {
-        Write-Host "Chrome and Edge were not found - running without a browser."
+        if ($Browser -ne 'None') { Write-Host "The browser you asked for was not found - running without a browser." }
     }
     Start-Sleep -Seconds 15     # let the tabs load
     # Maximise the browser so every laptop renders a similar amount of screen
@@ -376,7 +584,7 @@ function Stop-Workload {
         Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     if ($script:useBrowser) {
-        Get-CimInstance Win32_Process -Filter "Name='$($script:browser.Exe)'" -ErrorAction SilentlyContinue |
+        Get-CimInstance Win32_Process -Filter "Name='$($script:browserInfo.Exe)'" -ErrorAction SilentlyContinue |
             Where-Object { $_.CommandLine -like "*battery_test_browser*" } |
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         Start-Sleep -Seconds 2
@@ -398,6 +606,7 @@ function Get-TargetPoint($h, $fx, $fy) {
 function Invoke-UserAction($tick) {
     switch ($tick % 4) {
         0 {   # Notepad: move mouse in, click, type
+            if (-not $script:useNotepad) { Move-MouseWander; Write-Host "      [sim] (no Notepad) mouse wandered"; return }
             $h = Get-AppHandle "notepad"
             $front = Show-Window $h
             $pt = Get-TargetPoint $h 0.5 0.5
@@ -409,6 +618,7 @@ function Invoke-UserAction($tick) {
             } else { Write-Host "      [sim] Notepad: moved mouse (window not in front, so no click or typing)" }
         }
         1 {   # Browser: move mouse in, scroll the page, and change tab every third visit
+            if (-not $script:useBrowser) { Move-MouseWander; Write-Host "      [sim] (no browser) mouse wandered"; return }
             $h = Get-AppHandle "browser"
             $front = Show-Window $h
             $pt = Get-TargetPoint $h 0.5 0.55
@@ -416,12 +626,13 @@ function Invoke-UserAction($tick) {
             if ($front) {
                 $script:scrolls++
                 $tabNote = ""
-                if ($script:scrolls % 3 -eq 0) { $wsh.SendKeys("^{TAB}"); Start-Sleep -Milliseconds 800; $tabNote = ", switched tab" }
+                if ($TabSwitchEvery -gt 0 -and $script:scrolls % $TabSwitchEvery -eq 0) { $wsh.SendKeys("^{TAB}"); Start-Sleep -Milliseconds 800; $tabNote = ", switched tab" }
                 if ($script:scrolls % 10 -eq 0) { Send-Wheel -40 } else { Send-Wheel 3 }
                 Write-Host "      [sim] Browser: moved mouse$tabNote, scrolled the page"
             } else { Write-Host "      [sim] Browser: moved mouse (window not in front, so no scrolling)" }
         }
         2 {   # Calculator: move mouse over it, type a sum
+            if (-not $script:useCalc) { Move-MouseWander; Write-Host "      [sim] (no Calculator) mouse wandered"; return }
             $h = Get-AppHandle "calc"
             $front = Show-Window $h
             $pt = Get-TargetPoint $h 0.5 0.6
@@ -536,7 +747,12 @@ function Show-Report {
     $avgWText  = if ($null -ne $avgW)   { "$([math]::Round($avgW, 1)) W" } else { "N/A (laptop doesn't report it)" }
     $remText   = if ($null -ne $remWh)  { "$([math]::Round($remWh, 1)) Wh" } else { "N/A" }
     $fullText  = if ($null -ne $fullWh) { "$([math]::Round($fullWh, 1)) Wh" } else { "N/A" }
-    $workText  = if ($replay) { "not stored in CSV" } elseif ($NoWorkload) { "none (manual use)" } else { "simulated user: Notepad, Calculator, $(if ($browser) { $browser.Label } else { 'no browser' }) ($($Sites.Count) tabs), mouse wandering" }
+    $workText  = if ($replay) { "not stored in CSV" } elseif ($NoWorkload) { "none (manual use)" } else {
+        $wa = @()
+        if ($useNotepad) { $wa += 'Notepad' }
+        if ($useCalc)    { $wa += 'Calculator' }
+        if ($useBrowser) { $wa += "$($browserInfo.Label) ($(@(Get-TabUrls).Count) tabs)" }
+        "simulated user: $(if ($wa.Count) { $wa -join ', ' } else { 'mouse only' }), mouse activity $MouseActivity" }
     $brightTxt = if ($brightSet) { "$Brightness% (set by test)" } elseif ($replay) { "$avgBright% (average of readings)" } else { "$avgBright% (not changed)" }
     $stopText  = switch ($stopReason) {
         "user"    { "you pressed stop" }
@@ -674,12 +890,13 @@ if (-not (Get-Batt)) {
 }
 
 Write-Host ""
+Invoke-SettingsStep
 Write-Host "============ BATTERY BENCHMARK v$ScriptVersion ============"
 if (-not $NoWorkload) {
     if (-not $KeepApps) { Write-Host "First it asks to close your open apps (you can say no)." }
-    Write-Host "Then it opens Notepad, Calculator and Chrome ($($Sites.Count) tabs) and uses them"
-    Write-Host "like a person would (the mouse moves by itself). DON'T use the laptop"
-    Write-Host "while it runs, or the result won't be comparable."
+    Write-Host "Then it opens $(Get-WorkloadSummary)"
+    Write-Host "and uses them like a person would (the mouse moves by itself, $($MouseActivity.ToLower()) activity)."
+    Write-Host "DON'T use the laptop while it runs, or the result won't be comparable."
 } else {
     Write-Host "Workload is OFF. Use the laptop however you like."
 }
@@ -732,6 +949,7 @@ $tickNum      = 0
 
 Out-Both "=== Battery test started $startTime at $startCharge% (script v$ScriptVersion) ==="
 Out-Both "Laptop: $($cs.Manufacturer) $($cs.Model) | CPU: $cpuName | $osName"
+Out-Both "Settings: brightness $Brightness% | stop at $StopAt% | time limit $Minutes min | mouse $MouseActivity | tab switch every $TabSwitchEvery | $(if ($NoWorkload) { 'no workload' } else { Get-WorkloadSummary })"
 
 if (-not $NoWorkload) { Start-Workload }
 $consolePid = Get-ConsoleWindowPid
@@ -788,13 +1006,13 @@ try {
                 $tickNum++
 
                 # While waiting for the next 15-second step, keep the pointer wandering every 2-4 seconds
-                $nextWander = (Get-Date).AddSeconds($rng.Next(2, 5))
+                $nextWander = (Get-Date).AddSeconds((Get-WanderDelay))
                 while (-not $stop -and ((Get-Date) - $tickStart).TotalSeconds -lt 15) {
                     Start-Sleep -Milliseconds 500
                     if (Test-Stop) { $stop = $true; $stopReason = "user" }
                     if (-not $stop -and -not $NoWorkload -and (Get-Date) -ge $nextWander) {
                         try { Move-MouseWander } catch { }
-                        $nextWander = (Get-Date).AddSeconds($rng.Next(2, 5))
+                        $nextWander = (Get-Date).AddSeconds((Get-WanderDelay))
                     }
                 }
             }

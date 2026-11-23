@@ -10,7 +10,7 @@ then rates the result, adjusted for how old the PC is.
 ## What it does
 
 - Closes your open apps first (asks before it does, never force-kills anything).
-- Opens Notepad, Calculator and Chrome (Edge if there is no Chrome) with 5 website tabs.
+- Opens Notepad, Calculator and Chrome (Edge if there is no Chrome) with website tabs.
 - Acts like a person: types, scrolls, switches tabs, and moves the mouse every few seconds.
 - Keeps the PC awake and the screen on, sets brightness (default 65%) and restores it afterwards.
 - Logs charge, power draw and CPU every minute to a CSV and a text log.
@@ -23,6 +23,15 @@ then rates the result, adjusted for how old the PC is.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\battery_test.ps1
+```
+
+With no options it shows a **settings menu** (tabs, browser, websites, mouse activity, brightness,
+stop level and more). Type a number to change something, `S` to save your choices as the default
+(stored in `%APPDATA%\battery_benchmark_settings.json`), `R` to reset, or press Enter to start.
+Any option typed on the command line skips the menu, e.g. a 10-tab run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\battery_test.ps1 -Tabs 10 -MouseActivity High
 ```
 
 Don't touch the laptop while it runs; it controls the mouse and keyboard.
@@ -38,13 +47,19 @@ powershell -ExecutionPolicy Bypass -File .\battery_test.ps1 -ReportFrom "$env:US
 
 | Option | Default | Meaning |
 | --- | --- | --- |
+| `-Tabs` | one per site | Number of browser tabs, 1-30 (extra ordinary sites are added if needed). |
+| `-Sites` | 5 sites | Websites to open as tabs. |
+| `-Browser` | Auto | `Auto` (Chrome, else Edge), `Chrome`, `Edge` or `None`. |
+| `-NoNotepad`, `-NoCalculator` | off | Leave those apps out. |
+| `-MouseActivity` | Normal | `Low` (~8 s), `Normal` (~3 s) or `High` (1-2 s) between mouse moves. |
+| `-TabSwitchEvery` | 3 | Switch tab every N page visits. 0 = never. |
 | `-Brightness` | 65 | Screen brightness during the test. 0 = leave alone. |
 | `-StopAt` | 10 | Stop at this battery %. 0 = run until empty. |
 | `-Minutes` | 0 | Time limit in minutes. 0 = none. |
-| `-NoWorkload` | off | No simulated user; use the laptop yourself. |
 | `-KeepApps` | off | Don't close your open apps first. |
-| `-Sites` | 5 sites | Websites to open as tabs. |
+| `-NoWorkload` | off | No simulated user; use the laptop yourself. |
 | `-PcAgeYears` | auto | Age of the PC. Default comes from the BIOS date (approximate). |
+| `-Customize` | | Open the settings menu even when other options are given. |
 | `-ReportFrom` | | Build the report from a saved CSV and exit. |
 | `-OutputPath` | Desktop | Where the log and CSV go. |
 
@@ -59,7 +74,7 @@ These thresholds are a judgement call, not an industry standard.
 
 ## Status
 
-Syntax-checked and tested piece by piece (workload, report, CSV replay). A full run to an
+Syntax-checked and tested piece by piece (workload, settings menu, report, CSV replay). A full run to an
 empty battery has not been validated end to end.
 
 ## License
